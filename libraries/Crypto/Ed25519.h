@@ -29,11 +29,33 @@
 class Ed25519
 {
 public:
+    enum class Mode {
+        standard,
+        ph,
+        ctx,
+    };
+
     static void sign(uint8_t signature[64], const uint8_t privateKey[32],
-                     const uint8_t publicKey[32], const void *message,
-                     size_t len);
+                     const uint8_t publicKey[32], const void *message, size_t len)
+    {
+        sign(Mode::standard, signature, privateKey, publicKey, message, len);
+    }
+
     static bool verify(const uint8_t signature[64], const uint8_t publicKey[32],
-                       const void *message, size_t len);
+                       const void *message, size_t len)
+    {
+        return verify(Mode::standard, signature, publicKey, message, len);
+    }
+
+    static void sign(Mode mode, uint8_t signature[64],
+        const uint8_t privateKey[32], const uint8_t publicKey[32],
+        const void *message, size_t msglen,
+        const void *context = nullptr, size_t ctxlen = 0);
+
+    static bool verify(Mode mode, const uint8_t signature[64],
+        const uint8_t publicKey[32],
+        const void *message, size_t msglen,
+        const void *context = nullptr, size_t ctxlen = 0);
 
     static void generatePrivateKey(uint8_t privateKey[32]);
     static void derivePublicKey(uint8_t publicKey[32], const uint8_t privateKey[32]);
@@ -66,6 +88,9 @@ private:
     static bool decodePoint(Point &point, const uint8_t *buf);
 
     static void deriveKeys(SHA512 *hash, limb_t *a, const uint8_t privateKey[32]);
+
+    static void hashPH(SHA512 *hash, const void *message, size_t len);
+    static void hashDom2(SHA512 *hash, Mode mode, const void *ctx, size_t len);
 };
 
 #endif

@@ -116,16 +116,21 @@ static limb_t const numQ[NUM_LIMBS_256BIT] PROGMEM = {
 /**
  * \brief Signs a message using a specific Ed25519 private key.
  *
+ * \param mode Ed25519 variant: Ed25519 / Ed25519ph / Ed25519ctx.
  * \param signature The signature value.
  * \param privateKey The private key to use to sign the message.
  * \param publicKey The public key corresponding to \a privateKey.
  * \param message Points to the message to be signed.
- * \param len The length of the \a message to be signed.
+ * \param msglen The length of the \a message to be signed.
+ * \param context Points to the context (optional for Ed25519ph, mandatory for Ed25519ctx).
+ * \param ctxlen The length of the \a context. Up to 255 bytes.
  *
  * \sa verify(), derivePublicKey()
  */
-void Ed25519::sign(uint8_t signature[64], const uint8_t privateKey[32],
-                   const uint8_t publicKey[32], const void *message, size_t len)
+void Ed25519::sign(Ed25519::Mode mode, uint8_t signature[64],
+                   const uint8_t privateKey[32], const uint8_t publicKey[32],
+                   const void *message, size_t msglen,
+                   const void *context, size_t ctxlen)
 {
     SHA512 hash;
     uint8_t *buf = (uint8_t *)(hash.state.w); // Reuse hash buffer to save memory.
@@ -134,26 +139,37 @@ void Ed25519::sign(uint8_t signature[64], const uint8_t privateKey[32],
     limb_t k[NUM_LIMBS_256BIT];
     limb_t t[NUM_LIMBS_512BIT + 1];
     Point rB;
+    uint8_t prefix[32];
 
     // Derive the secret scalar a and the message prefix from the private key.
     deriveKeys(&hash, a, privateKey);
+    memcpy(prefix, buf + 32, 32);
 
-    // Hash the prefix and the message to derive r.
+    // Hash dom2(), the prefix and the message to derive r.
     hash.reset();
-    hash.update(buf + 32, 32);
-    hash.update(message, len);
+    hashDom2(&hash, mode, context, ctxlen);
+    hash.update(prefix, 32);
+    if (mode != Mode::ph)
+        hash.update(message, msglen);
+    else
+        hashPH(&hash, message, msglen);
     hash.finalize(buf, 0);
     reduceQFromBuffer(r, buf, t);
+    clean(prefix);
 
     // Encode rB into the first half of the signature buffer as R.
     mul(rB, r);
     encodePoint(signature, rB);
 
-    // Hash R, A, and the message to get k.
+    // Hash dom2(), R, A, and the message to get k.
     hash.reset();
+    hashDom2(&hash, mode, context, ctxlen);
     hash.update(signature, 32); // R
     hash.update(publicKey, 32); // A
-    hash.update(message, len);
+    if (mode != Mode::ph)
+        hash.update(message, msglen);
+    else
+        hashPH(&hash, message, msglen);
     hash.finalize(buf, 0);
     reduceQFromBuffer(k, buf, t);
 
@@ -176,18 +192,23 @@ void Ed25519::sign(uint8_t signature[64], const uint8_t privateKey[32],
 /**
  * \brief Verifies a signature using a specific Ed25519 public key.
  *
+ * \param mode Ed25519 variant: Ed25519 / Ed25519ph / Ed25519ctx.
  * \param signature The signature value to be verified.
  * \param publicKey The public key to use to verify the signature.
  * \param message The message whose signature is to be verified.
- * \param len The length of the \a message to be verified.
+ * \param msglen The length of the \a message to be verified.
+ * \param context Points to the context (optional for Ed25519ph, mandatory for Ed25519ctx).
+ * \param ctxlen The length of the \a context. Up to 255 bytes.
  *
  * \return Returns true if the \a signature is valid for \a message;
  * or false if the \a signature is not valid.
  *
  * \sa sign()
  */
-bool Ed25519::verify(const uint8_t signature[64], const uint8_t publicKey[32],
-                     const void *message, size_t len)
+bool Ed25519::verify(Ed25519::Mode mode, const uint8_t signature[64],
+                     const uint8_t publicKey[32],
+                     const void *message, size_t msglen,
+                     const void *context, size_t ctxlen)
 {
     SHA512 hash;
     Point A;
@@ -201,9 +222,13 @@ bool Ed25519::verify(const uint8_t signature[64], const uint8_t publicKey[32],
     if (decodePoint(A, publicKey) && decodePoint(R, signature)) {
         // Reconstruct the k value from the signing step.
         hash.reset();
+        hashDom2(&hash, mode, context, ctxlen);
         hash.update(signature, 32);
         hash.update(publicKey, 32);
-        hash.update(message, len);
+        if (mode != Mode::ph)
+            hash.update(message, msglen);
+        else
+            hashPH(&hash, message, msglen);
         hash.finalize(k, 0);
 
         // Calculate s * B.  The s value is stored temporarily in kA.t.
@@ -639,4 +664,34 @@ void Ed25519::deriveKeys(SHA512 *hash, limb_t *a, const uint8_t privateKey[32])
 
     // Unpack the first half of the hash value into "a".
     BigNumberUtil::unpackLE(a, NUM_LIMBS_256BIT, buf, 32);
+}
+
+/**
+* \brief The internal PH function used in Ed25519ph
+* calculates SHA hash on the input message and updates the main hash
+*/
+void Ed25519::hashPH(SHA512 *hash, const void *message, size_t len)
+{
+    SHA512 sha;
+    uint64_t *buf = sha.state.w; // Reuse hash buffer to save memory.
+    sha.update(message, len);
+    sha.finalize(buf, 0);
+
+    hash->update(buf, 64);
+}
+/**
+* \brief The internal dom2 function used in Ed25519ph and Ed25519ctx
+* updates the main hash with a fixed string, flag and context bytes
+*/
+void Ed25519::hashDom2(SHA512 *hash, Mode mode, const void *ctx, size_t len)
+{
+    if (mode == Mode::standard)
+        return;
+    static const char prefix[] PROGMEM = "SigEd25519 no Ed25519 collisions";
+    hash->update(prefix, 32);
+    uint8_t phflag = (mode == Mode::ph ? 1 : 0);
+    uint8_t fc[] = { phflag, (uint8_t)len };
+    hash->update(fc, 2);
+    if (ctx && len)
+        hash->update(ctx, len);
 }
