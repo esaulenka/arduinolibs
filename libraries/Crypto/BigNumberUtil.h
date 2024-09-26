@@ -34,7 +34,7 @@
 #define BIGNUMBER_LIMB_16BIT 1
 #define BIGNUMBER_LIMB_32BIT 0
 #define BIGNUMBER_LIMB_64BIT 0
-#elif defined(__GNUC__) && __WORDSIZE == 64
+#elif defined(__GNUC__) && (__x86_64__ || __ppc64__)
 // 64-bit system with 128-bit double limbs.
 #define BIGNUMBER_LIMB_8BIT  0
 #define BIGNUMBER_LIMB_16BIT 0
